@@ -1,9 +1,3 @@
-import random
-import json
-import gym
-from gym import spaces
-import pandas as pd
-import numpy as np
 
 MAX_STEPS = 20000
 class TradingEnv(gym.Env):
@@ -16,12 +10,22 @@ class TradingEnv(gym.Env):
         self.usdt_holdings = 1000
         self.btc_holdings = 0
         self.current_step = 0
+        self.current_price = 0
         self.prev_usdt,self.prev_btc = 0,0
         #self.init_btc = self.btc_holdings
         self.max_btc = 0
         self.max_usdt = 0
         self.btc_returns = 0
+        self.return_df = pd.DataFrame()
         self.current_act = 0
+        self.trades = pd.DataFrame()
+        self.balances = pd.DataFrame()
+        self.dates = df["Close time"]
+        self.last_entry = 0
+        self.last_exit = 0
+        self.last_entry_t = 0
+        self.last_exit_t = 0
+        self.reward = 0
         
 
         self.df = df
@@ -35,62 +39,112 @@ class TradingEnv(gym.Env):
         
 
     def _next_observation(self):
-        # Get the stock data points for the last 5 days and scale to between 0-1
+        # Get the hist data at step
         frame = np.array([
             self.df["Open"].iloc[self.current_step],
             self.df["High"].iloc[self.current_step],
             self.df["Low"].iloc[self.current_step],
             self.df["Close"].iloc[self.current_step],
             self.df["Volume"].iloc[self.current_step],
+            #self.df["Position"].iloc[self.current_step],
         ])
-
-        # Append additional data and scale each value to between 0-1
-        #print(self.total_sales_value / (MAX_NUM_SHARES * MAX_SHARE_PRICE))
-        """obs = np.append(frame, [[
-            self.balance / 1,
-            self.max_net_worth / MAX_ACCOUNT_BALANCE,
-            self.shares_held / MAX_NUM_SHARES,
-            self.cost_basis / MAX_SHARE_PRICE,
-            self.total_shares_sold / MAX_NUM_SHARES,
-            self.total_sales_value / (MAX_NUM_SHARES * MAX_SHARE_PRICE),
-        ]], axis=0)"""
         return frame
 
     def _take_action(self, action):
-        # Set the current price to a random price within the time step
-        current_price = random.uniform(self.df["Open"].iloc[self.current_step], self.df["Close"].iloc[self.current_step])
+        #nested buy sell functions
+        def buy():
+            total_possible = float(self.usdt_holdings / self.current_price)
+            #update trade df
+            trade_stamp = portmaker.to_dt(self.df["Close time"].iloc[self.current_step])
+            trade = pd.DataFrame({"Date":trade_stamp,"USDT":int(self.usdt_holdings),"BTC":self.btc_holdings,"Type":"BUY","Price":self.current_price},index=[0])
+            self.trades = pd.concat([self.trades,trade])
+            
+            #set last entry to current price
+            self.last_entry = self.current_price
+            # Buy amount % of balance in shares
+            
+            
+            #update balances
+            
+            
+            total_possible = round(total_possible,5)
+            #update balances
+            #deduct spent usdt from usdt_holdings 
+            self.usdt_holdings = self.usdt_holdings -(total_possible*self.current_price)
+            self.btc_holdings = total_possible
+            bal = pd.DataFrame({"Date":trade_stamp,"USDT":int(self.usdt_holdings),"BTC":self.btc_holdings,"Price":self.current_price},index=[0])
+            self.balances = pd.concat([self.balances,bal])
+            #update max btc held
+            if total_possible > self.max_btc:
+                self.max_btc = self.btc_holdings
+            print("Buy {}btc at {}\t{}".format(total_possible,str(self.current_price),trade_stamp))
+            
+        def sell():
+            trade_stamp = portmaker.to_dt(self.df["Close time"].iloc[self.current_step])
+            self.last_exit = self.current_price
+            total_possible = float(self.btc_holdings)#/float(last_price["bidPrice"])
+            print("Sell {} btc at {}\t{}".format(total_possible,df["Close"].iloc[self.current_step],trade_stamp))
+            #update balances
+            self.btc_holdings = self.btc_holdings -self.btc_holdings
+            self.usdt_holdings = float(total_possible*self.current_price)
+            #update trade df
+            #trade_stamp = portmaker.to_dt(self.df["Close time"].iloc[self.current_step])
+            trade = pd.DataFrame({"Date":trade_stamp,"USDT":int(self.usdt_holdings),"BTC":total_possible,"Type":"SELL","Price":self.current_price},index=[0])
+            bal = pd.DataFrame({"Date":trade_stamp,"USDT":int(self.usdt_holdings),"BTC":self.btc_holdings,"Price":self.current_price},index=[0])
+            self.balances = pd.concat([self.balances,bal])    
+            self.trades = pd.concat([self.trades,trade])    
+            
+        # Set the current price to a random price within the current time step
+        self.current_price = random.uniform(self.df["Open"].iloc[self.current_step], self.df["Close"].iloc[self.current_step])
         #print(current_price,self.df["Open"].iloc[self.current_step])
         action_type = action[0]
         self.current_act = action_type
+        #external purchase quantity
         amount = action[1]
-        #BUY condition
-        if (action_type > 0 and self.usdt_holdings !=0 and self.last_sig!=action_type ):
+        """
+        BUY BTC
+        ==============
+        Conditions are:
+        -if action is buy
+        -has usdt to buy btc
+        -current signal is not a same as previous signal
+        -has no btc
+        ==============
+        """
+        
             
-            # Buy amount % of balance in shares
-            total_possible = float(self.usdt_holdings / current_price)
-            self.usdt_holdings = self.usdt_holdings -(total_possible*current_price)
-            total_possible = round(total_possible,5)
-            #update balances
-            self.btc_holdings = total_possible
-            if total_possible > self.max_btc:
-                self.max_btc = self.btc_holdings
-            print("buying {}btc at {}".format(total_possible,str(current_price)))
-            print("{} remaining usdt".format(self.usdt_holdings))
-            print("\n====\n")
+            
+        if (action_type > 0 and self.usdt_holdings !=0 and self.last_sig!=action_type and self.btc_holdings ==0):
+            #overtrading limiter 2
+            td = self.current_price/self.last_exit
+            if(td > .99 and td < 1.01):
+                pass
+                #print("no trades", self.df.index.values[self.current_step],self.current_step)
+            else:
+                buy()
             
 
         elif (action_type < 0 and self.btc_holdings !=0 and self.last_sig!=action_type):
             # Buy amount % of balance in shares
-            total_possible = float(self.btc_holdings)#/float(last_price["bidPrice"])
-            
-            #update balances
-            self.btc_holdings = self.btc_holdings -self.btc_holdings
-            self.usdt_holdings = float(total_possible*current_price)
+            td = self.current_price/self.last_entry
+            #prevent action at less the +-1% delta
+            #backtest a multitude of these tolerances to tune R/R
+            if(td > .99 and td < 1.01):
+                pass
+                #uncomment to see possible overtrade
+                #print("no trades", self.df.index.values[self.current_step],self.current_step)
+                #df["Position"].iloc[self.current_step]
+            else:
+                sell()
+                
+                
+                
+        
             if self.usdt_holdings > self.max_usdt:
                 self.max_usdt = self.usdt_holdings
-            print("Selling {}btc at {}".format(total_possible,str(current_price)))
-            print("{} remaining usdt".format(self.usdt_holdings))
-            print("\n====\n")
+            #print("Selling {}btc at {}".format(total_possible,str(current_price)))
+            #print("{} remaining usdt".format(self.usdt_holdings))
+            #print("\n====\n")
             
             
         self.last_sig  = action[0]
@@ -104,10 +158,10 @@ class TradingEnv(gym.Env):
             #print(self.btc_holdings,self.init_btc)
         else:
             #print("USDT: {}  Init btc: {}".format(self.usdt_holdings,self.init_btc))
-            if(self.usdt_holdings != self.prev_usdt):
-                print("USDT: {}  Init btc: {}".format(self.usdt_holdings,self.init_btc))
+            
+                #print("USDT: {}  Init btc: {}".format(self.usdt_holdings,self.init_btc))
             self.prev_usdt,self.prev_btc = self.usdt_holdings,self.btc_holdings
-            #print("Current profit: ",curr_profit)
+            #print("Current profit: ",curr_profit)"""
 
 
     def step(self, action):
@@ -120,13 +174,19 @@ class TradingEnv(gym.Env):
             self.current_step = 0
 
         delay_modifier = (self.current_step / MAX_STEPS)
-
-        #reward = self.btc_net
+        if(self.btc_holdings!=0):
+            self.reward = self.btc_holdings/self.init_btc
+        elif(self.btc_holdings==0 and self.usdt_holdings!=0):
+            curr_btc = float(self.usdt_holdings / self.current_price)
+            self.reward = curr_btc/self.init_btc
+            
         done = (self.btc_holdings/self.init_btc == 0 and self.usdt_holdings==0)
+        if(self.current_step == len(df)-1):
+            done = True
 
         obs = self._next_observation()
 
-        return obs,  done, {}
+        return obs, self.reward, done, {}
 
     def reset(self):
         # Reset the state of the environment to an initial state
@@ -136,32 +196,50 @@ class TradingEnv(gym.Env):
         self.max_btc = 0
         self.max_usdt = 0
         self.btc_returns = 0
+        self.return_df = pd.DataFrame()
         self.current_act = 0
+        self.current_price = 0
         self.init_btc = (self.usdt_holdings/df['Open'].iloc[self.current_step])
+        self.init_usdt = self.usdt_holdings
+        self.trades = pd.DataFrame()
+        self.balances = pd.DataFrame()
+        self.last_entry = 0
+        self.last_exit = 0
+        self.last_entry_t = 0
+        self.last_exit_t = 0
+        self.reward = 0
 
         # Set the current step to a random point within the data frame
         #print(self.df.columns)
-        self.current_step = random.randint(
-            0, len(self.df['Open'].values) - 6)
+        self.current_step = 0#random.randint(0, len(self.df['Open'].values) - 6)
 
         return self._next_observation()
 
     def render(self, mode='human', close=False):
+        curr_profit = self.reward
         # Render the environment to the screen
-        profit = (self.btc_holdings/ self.init_btc)
-        if(profit>0):
-            profit*=100
+        #profit = (self.btc_holdings/ self.init_btc)
+        if(self.reward>0):
+            curr_profit*=100
         else:
-            profit = (1-profit)
-        max_curr = (self.max_btc*self.df['Open'].iloc[-1])
+            profit = (1-curr_profit)*100
+        max_curr = (self.max_btc/self.init_btc)*100
         
         
         print(f'Step: {self.current_step}')
-        print(f'BTC Balance: {self.btc_holdings}')
-        print("USDT Balance: {}".format(self.usdt_holdings))
+        print("Timestamp: ",portmaker.to_dt(self.df["Close time"].iloc[self.current_step]))
+        print("-------------")
+        print(f'Current BTC Balance: {self.btc_holdings}')
+        print("Init BTC: ",self.init_btc)
+        print("-------------")
+        print("Current USDT Balance: {}".format(self.usdt_holdings))
+        print("Init USDT: ",self.init_usdt)
+        print("-------------")
+        print("-------------")
         print('Max usdt: {}'.format(self.max_usdt))
         print(f'Max btc: {self.max_btc}')
-        print('Max btc at current price: {}'.format(max_curr))
-        print(f'Profit: {profit}')
+        print('Max profit at step: {}'.format(max_curr))
+        #print(f'Profit: {profit}')
+        if(self.current_step == len(df)-8):
+            make_plots()
         #print(df.iloc[self.current_step].index)
-        return {"USDT":self.usdt_holdings,"BTC":self.btc_holdings}
